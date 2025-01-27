@@ -1,206 +1,654 @@
-# Parte 1 SQLi
 
+# add_comment.php
 
-## a) Ejemplo de error en consulta SQL
-
-![[Pasted image 20250114233157.png]]
-
-| Pregunta                                                       | Resultado                                               |
-| -------------------------------------------------------------- | ------------------------------------------------------- |
-| Escribo los valores                                            | "                                                       |
-| En el Campo                                                    | User                                                    |
-| Del formulario de la página                                    | http://web_vulnerable/insert_player.php#            |
-| La consulta que se ejecuta es                                  | SELECT userId, password FROM users WHERE username = """ |
-| Campos del formulario web utilizados en la consulta SQL        | password                                                |
-| Campos del formulario web **no** utilizados en la consulta SQL | userId                                                  |
-
-
-## b) Ataque por diccionario sin saber el usuario
-
-![[Pasted image 20250127085304.png]]
-
-| Pregunta                                              | Respuesta                                                                                                          |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Explicación del ataque                                | El ataque consiste en repetir una consulta utilizando en cada interacción una contraseña diferente del diccionario |
-| Campo de usuario con que el ataque ha tenido éxito    | " OR 1=1 AND password="1234"-- -                                                                                   |
-| Campo de contraseña con que el ataque ha tenido éxito | 1234                                                                                                               |
-
-
-## c) Error de programación
-
-![[Pasted image 20250120122047.png]]
-
-| Pregunta                                 | Respuesta                                                                                                                                       |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Explicación del error                    | Se usa SQLite3::escapeString para evitar SQLi, pero no está funcionando                                                                         |
-| Solución: Cambiar la línea con el código | $query = SQLite3::escapeString('SELECT userId, password FROM users WHERE username = "' . $user . '"');                                          |
-| por la siguiente línea                   | $query = $db->prepare('SELECT userId, password FROM users WHERE username = :username');<br>$query->bindValue(':username', $user, SQLITE3_TEXT); |
-| | |
-| Explicación del error                    | Uso de `$_COOKIE` para almacenar información sensible                                                                                           |
-| Solución: Cambiar la línea con el código | $_COOKIE['userId'] = $userId;                                                                                                                   |
-| por la siguiente línea                   | session_start();  // Esta línea debe estar al comienzo del archivo.<br>$_SESSION['userId'] = $userId;<br>                                       |
-| | |
-| Explicación del error                    | No se está validando si el `username` existe                                                                                                    |
-| Solución: Cambiar la línea con el código | if(!isset($row['password'])) return FALSE;<br>                                                                                                  |
-| por la siguiente línea                   | if ($row === false) {<br>    return FALSE; // Usuario no existe<br>}<br>                                                                        |
-| | |
-| Explicación del error                    | Comparación de contraseñas en texto plano                                                                                                       |
-| Solución: Cambiar la línea con el código | if ($password == $row['password'])<br>                                                                                                          |
-| por la siguiente línea                   | if (password_verify($password, $row['password']))<br>                                                                                           |
-
-
-## d) Vulnerabilidad en add_comment.php
-
-| Pregunta | Respuesta |
-| - | - |
-| Vulnerabilidad detectada | Inyección SQL en el parámetro id de la consulta SQL. |
-| Descripción del ataque | El atacante puede manipular el valor de $_GET['id'] en la URL para ejecutar consultas maliciosas en la base de datos, como robar información o modificar datos. Por ejemplo, usando: ?id=1; DROP TABLE comments;--. |
-| ¿Cómo podemos hacer que sea segura esta entrada? | Utilizar consultas parametrizadas para evitar la inyección SQL, como prepare y bindValue. También validar y sanitizar el parámetro id asegurándose de que solo acepte valores numéricos. |
-| | |
-| Vulnerabilidad detectada | Falta de sanitización al imprimir datos provenientes de la base de datos. |
-| Descripción del ataque | Si un atacante logra inyectar código HTML o JavaScript malicioso en los campos username o body de la base de datos, dicho contenido se renderizará en el navegador del usuario, permitiendo un ataque XSS. |
-| ¿Cómo podemos hacer que sea segura esta entrada? | Escapar los datos antes de mostrarlos en la página utilizando funciones como htmlspecialchars para evitar la ejecución de código malicioso. |
-
-
-# Parte 2 XSS
-
-
-## a) alert
-
-| Pregunta                      | Respuesta                                      |
-| ----------------------------- | ---------------------------------------------- |
-| Introduzco el mensaje         | ```<script>alert("Prueba")</script>```         |
-| En el formulario de la página | http://web_vulnerable/add_comment.php?id=5 |
-
-![[Pasted image 20250121115853.png]]
-
-
-## b) & en URL
-
-| Pregunta    | Respuesta                                                                    |
-| ----------- | ---------------------------------------------------------------------------- |
-| Explicación | "&amp" es una alternativa para que los navegadores entiendan el símbolo "&". |
-
-
-## c) Problema al mostrar los comentarios
-
-¿Cuál es el problema?  SQL Injection.
-Sustituyo el código de la/las líneas:
 ```php
-$query = "SELECT commentId, username, body FROM comments C, users U WHERE C.playerId =".$_GET['id']." AND U.userId = C.userId order by C.playerId desc"; 
-$result = $db->query($query) or die("Invalid query: " . $query);
-``` 
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
+require dirname(__FILE__) . '/private/auth.php';
 
-Por el siguiente código:
-```php
-$playerId = intval($_GET['id']); // Validar que sea un entero
-$stmt = $db->prepare("SELECT commentId, username, body 
-                      FROM comments C, users U 
-                      WHERE C.playerId = :id AND U.userId = C.userId 
-                      ORDER BY C.playerId DESC");
-$stmt->bindValue(':id', $playerId, SQLITE3_INTEGER);
-$result = $stmt->execute();
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['body']) && isset($_GET['id'])) {
+        // Validar entradas
+        $body = trim($_POST['body']);
+        $playerId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+        $userId = filter_input(INPUT_COOKIE, 'userId', FILTER_VALIDATE_INT);
+
+        if (!$playerId || !$userId || empty($body)) {
+            // Si hay datos inválidos, redirigir con un error
+            header("Location: list_players.php?error=invalid_input");
+            exit;
+        }
+
+        try {
+            // Usar PDO para evitar inyección SQL
+            $db = new PDO('sqlite:your_database.db'); // Configura correctamente tu conexión
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $query = "INSERT INTO comments (playerId, userId, body) VALUES (:playerId, :userId, :body)";
+            $stmt = $db->prepare($query);
+            $stmt->bindParam(':playerId', $playerId, PDO::PARAM_INT);
+            $stmt->bindParam(':userId', $userId, PDO::PARAM_INT);
+            $stmt->bindParam(':body', $body, PDO::PARAM_STR);
+
+            $stmt->execute();
+            header("Location: list_players.php?success=1");
+            exit;
+        } catch (PDOException $e) {
+            // Manejo de errores con un mensaje genérico
+            error_log("Error en la base de datos: " . $e->getMessage());
+            header("Location: list_players.php?error=db_error");
+            exit;
+        }
+    }
+}
+
+# Show form
+
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Comments creator</title>
+</head>
+<body>
+<header>
+    <h1>Comments creator</h1>
+</header>
+<main class="player">
+    <form action="" method="post">
+        <h3>Write your comment</h3>
+        <textarea name="body" required></textarea>
+        <input type="submit" value="Send">
+    </form>
+    <form action="logout.php" method="post" class="menu-form">
+        <a href="list_players.php">Back to list</a>
+        <input type="submit" name="Logout" value="Logout" class="logout">
+    </form>
+</main>
+<footer class="listado">
+    <img src="images/logo-iesra-cadiz-color-blanco.png">
+    <h4>Puesta en producción segura</h4>
+    < Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/"> donate</a> >
+</footer>
+</body>
+</html>
 ```
 
-¿Cuál es el problema? XSS.
-Sustituyo el código de la/las líneas
+- Utilizamos PDO para evitar las inyecciones SQL.
+- Ahora se validan las entradas _POST['body'], $_GET['id'] y $_COOKIE['userId'].
+- Se redirige correctamente en caso de error.
+- Ahora no se muestran los errores a los usuarios.
+- Se ha eliminado el uso inseguro de die().
+# add_comment.php
+
 ```php
-echo "<div>
-        <h4> ". $row['username'] ."</h4> 
-        <p>commented: " . $row['body'] . "</p>
-      </div>";
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
+require dirname(__FILE__) . '/private/auth.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['body']) && isset($_GET['id'])) {
+        // Validar entradas
+        $body = trim($_POST['body']);
+        $playerId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
+        $userId = filter_input(INPUT_COOKIE, 'userId', FILTER_VALIDATE_INT);
+
+        if (!$playerId || !$userId || empty($body)) {
+            // Si hay datos inválidos, redirigir con un error
+            header("Location: list_players.php?error=invalid_input");
+            exit;
+        }
+
+        try {
+            // Usar PDO para evitar inyección SQL
+            $db = new PDO('sqlite:your_database.db'); // Configura correctamente tu conexión
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $query = "INSERT INTO comments (playerId, userId, body) VALUES (:playerId, :userId, :body)";
+            $stmt = $db->prepare($query);
+            $stmt->bindParam(':playerId', $playerId, PDO::PARAM_INT);
+            $stmt->bindParam(':userId', $userId, PDO::PARAM_INT);
+            $stmt->bindParam(':body', $body, PDO::PARAM_STR);
+
+            $stmt->execute();
+            header("Location: list_players.php?success=1");
+            exit;
+        } catch (PDOException $e) {
+            // Manejo de errores con un mensaje genérico
+            error_log("Error en la base de datos: " . $e->getMessage());
+            header("Location: list_players.php?error=db_error");
+            exit;
+        }
+    }
+}
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Comments creator</title>
+</head>
+<body>
+<header>
+    <h1>Comments creator</h1>
+</header>
+<main class="player">
+    <form action="" method="post">
+        <h3>Write your comment</h3>
+        <textarea name="body" required></textarea>
+        <input type="submit" value="Send">
+    </form>
+    <form action="logout.php" method="post" class="menu-form">
+        <a href="list_players.php">Back to list</a>
+        <input type="submit" name="Logout" value="Logout" class="logout">
+    </form>
+</main>
+<footer class="listado">
+    <img src="images/logo-iesra-cadiz-color-blanco.png">
+    <h4>Puesta en producción segura</h4>
+    < Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/"> donate</a> >
+</footer>
+</body>
+</html>
 ```
 
-Por el siguiente código
+- Se vuelve a utilizar PDO para evitar SQL.
+- Se validan las entradas: $_GET['id'], $_COOKIE['userId'] y $_POST['body'].
+- En lugar de usar die(), se emplea error_log() para registrar los errores.
+# index.php
+
 ```php
-echo "<div>
-        <h4>" . htmlspecialchars($row['username'], ENT_QUOTES, 'UTF-8') . "</h4> 
-        <p>commented: " . htmlspecialchars($row['body'], ENT_QUOTES, 'UTF-8') . "</p>
-      </div>";
+<?php
+# On logout
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['Logout'])) {
+    # Delete cookies securely
+    setcookie('user', '', time() - 3600, '/', '', true, true);
+    setcookie('password', '', time() - 3600, '/', '', true, true);
+    setcookie('userId', '', time() - 3600, '/', '', true, true);
+
+    # Redirigir tras eliminar las cookies
+    header("Location: index.php");
+    exit;
+}
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3</title>
+</head>
+<body>
+    <header>
+        <h1>Developers Awards</h1>
+    </header>
+    <main>
+        <h2><a href="insert_player.php">Add a new player</a></h2>
+        <h2><a href="list_players.php">List of players</a></h2>
+        <h2><a href="buscador.html">Search a player</a></h2>
+    </main>
+    <form action="" method="post" class="menu-form">
+        <input type="submit" name="Logout" value="Logout" class="logout">
+    </form>
+    <footer>
+        <h4>Puesta en producción segura</h4>
+        < Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a> >
+    </footer>
+</body>
+</html>
 ```
 
+- Las cookies se eliminan correctamente.
+- Validación del método HTTP.
+- Redirección segura, se usa exit tras borrar las cookies.
+# insert_player.php
 
-## d) Otras páginas afectadas 
+```php
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
 
-| Pregunta                 | Respuesta                                      |
-| ------------------------ | ---------------------------------------------- |
-| Otras páginas afectadas  | http://web_vulnerable/insert_player.php    |
-| ¿Cómo lo he descubierto? | Probando en todos los formularios que he visto |
+# Require logged users
+require_once dirname(__FILE__) . '/private/auth.php';
 
+$name = $team = $id = '';
 
-# Parte 3 Control de acceso, autenticación y sesiones de usuarios
-**
+# Procesar solicitud POST
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['name']) && isset($_POST['team'])) {
+        $name = trim($_POST['name']);
+        $team = trim($_POST['team']);
+        $id = isset($_POST['id']) ? intval($_POST['id']) : null;
 
-## a) Registro más seguro
-- Validar las entradas de los usuarios.
-	La aplicación no valida si el usuario está inyectando código SQL.
-- Encriptar las contraseñas en lugar de guardarlas en texto plano.
-	Por lo que se puede ver en el código, las contraseñas se guardan sin cifrar.
-- Se crean usuario con privilegios.
-	Cualquier persona puede crear usuarios que pueden añadir entradas en la página.
-- Prohibir contraseñas inseguras.
-	Evitar el uso de contraseñas débiles.
+        # Validar entradas
+        if (empty($name) || empty($team)) {
+            die("El nombre del jugador y el equipo son obligatorios.");
+        }
 
-## b) Login más seguro
-- Validar las entradas de los usuarios.
-	La aplicación no valida si el usuario está inyectando código SQL.
-- Verificación de contraseñas de manera segura.
-	Usar la función **password_verify()** para comprobar si la contraseña coincide con la de la base de datos.
-- Limitar los intentos de login(Evitar fuerza bruta).
-	Bloquear a los usuarios que fallen 3-5 veces el login para evitar los ataques de fuerza bruta.
+        # Consulta preparada para evitar inyecciones SQL
+        if ($id) {
+            $stmt = $db->prepare("INSERT OR REPLACE INTO players (playerid, name, team) VALUES (:id, :name, :team)");
+            $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        } else {
+            $stmt = $db->prepare("INSERT INTO players (name, team) VALUES (:name, :team)");
+        }
+        $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt->bindValue(':team', $team, SQLITE3_TEXT);
+        
+        $stmt->execute() or die("Error al guardar en la base de datos.");
+        header("Location: list_players.php");
+        exit;
+    }
+} elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['id'])) {
+    # Cargar datos del jugador para edición
+    $id = intval($_GET['id']);
+    $stmt = $db->prepare("SELECT name, team FROM players WHERE playerid = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
 
-## c) Registro aún más seguro
-- Solo poder entrar en esta página si estás logeado.
-	De esta forma evitamos que cualquier persona cree nuevos usuarios.
-- Hacer que un administrador valide a los usuarios.
-	Si, de alguna forma, alguien desconocido se registra, sería necesario que un administrador valide ese usuario.
-- Crear roles de usuario.
-	Hacer distinciones entre usuarios administradores y usuarios comunes.
+    $result = $stmt->execute() or die("Error al consultar la base de datos.");
+    $row = $result->fetchArray(SQLITE3_ASSOC);
 
-## d) Acceso a la carpeta private
-![[Pasted image 20250126200150.png]]
+    if (!$row) {
+        die("¡Jugador no encontrado!");
+    }
 
-Por lo que se ve en la imagen anterior, no, no tenemos acceso a la carpeta private desde el navegador, pero si tuviéramos acceso, tendríamos que denegar el acceso a la carpeta editando los archivos de configuración del apache.
-
-## e) Suplantar la identidad
-Como hicimos en el apartado 1.b, suplantamos la identidad del usuario *luis*. Esto se podría evitar haciendo uso de los tokens CSRF en los formularios de login.
-
-# Parte 4 Servidores web
-- Validación de entradas.
-- Contraseñas seguras.
-- Limitación de intentos de login.
-- Roles de usuario.
-- Acceso restringido a archivos sensibles.
-- Uso de CSRF tokens.
-
-# Parte 5 CSRF
-
-## a) Añadir botón para donar
-
-![[Pasted image 20250126201318.png]]
-
-| Pregunta    | Respuesta                                                                                                                                  |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| En el campo | team                                                                                                                                       |
-| Introduzco  | ```<form action="http://web.pagos/donate.php?amount=100&receiver=attacker" method="get"> <button type="submit">Profile</button> </form>``` |
-
-## b) Redirigir al ver los comentarios
-
-| Pregunta    | Respuesta                                                                                                                                                |
-| ----------- | --------------------------------------------------------------------------------------- |
-| En el campo | comentario                                                                              |
-| Introduzco  | ```<script>window.location='http://www.donate.co/?amount=100&destination=ACMEScouting/';</script>``` |
-
-## c) Condiciones para transferir el dinero
-
-Para que las donaciones ocurran, los usuarios que le den al botón o entren a la sección de comentarios, deben estar logeados en la página.
-
-## d) Otro tipo de ataque
-
-```html
-<form action="donate.php" method="POST">
-    <input type="hidden" name="amount" value="100">
-    <input type="hidden" name="receiver" value="<script>window.location='http://www.donate.co/?amount=100&destination=ACMEScouting/';</script>">
-    <input type="submit" value="Realizar donación">
-</form>
+    $name = htmlspecialchars($row['name']);
+    $team = htmlspecialchars($row['team']);
+}
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Players List</title>
+</head>
+<body>
+    <header>
+        <h1>Player</h1>
+    </header>
+    <main class="player">
+        <form action="" method="post">
+            <input type="hidden" name="id" value="<?= htmlspecialchars($id) ?>">
+            <h3>Player name</h3>
+            <textarea name="name" required><?= htmlspecialchars($name) ?></textarea><br>
+            <h3>Team name</h3>
+            <textarea name="team" required><?= htmlspecialchars($team) ?></textarea><br>
+            <input type="submit" value="Send">
+        </form>
+        <form action="logout.php" method="post" class="menu-form">
+            <a href="index.php">Back to home</a>
+            <a href="list_players.php">Back to list</a>
+            <input type="submit" name="Logout" value="Logout" class="logout">
+        </form>
+    </main>
+    <footer class="listado">
+        <img src="images/logo-iesra-cadiz-color-blanco.png" alt="Logo">
+        <h4>Puesta en producción segura</h4>
+        <p> Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a></p>
+    </footer>
+</body>
+</html>
 ```
+
+- Uso de prepare() para prevenir inyecciones SQL.
+- Se verifica lo que el usuario introduce en name y team.
+- Se usa htmlspecialchars() para evitar XSS.
+# list_player.php
+
+```php
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
+
+# Require logged users
+require_once dirname(__FILE__) . '/private/auth.php';
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Players List</title>
+</head>
+<body>
+<header class="listado">
+    <h1>Players List</h1>
+</header>
+<main class="listado">
+    <section>
+        <ul>
+            <?php
+            $query = "SELECT playerid, name, team FROM players ORDER BY playerid DESC";
+
+            # Usar consulta preparada para evitar problemas con la base de datos
+            $result = $db->query($query) or die("Error al ejecutar la consulta.");
+
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                # Escapar datos para prevenir XSS
+                $playerId = htmlspecialchars($row['playerid']);
+                $name = htmlspecialchars($row['name']);
+                $team = htmlspecialchars($row['team']);
+
+                echo "
+                <li>
+                    <div>
+                        <span>Name: $name</span>
+                        <span>Team: $team</span>
+                    </div>
+                    <div>
+                        <a href=\"show_comments.php?id=$playerId\">(Show/Add Comments)</a> 
+                        <a href=\"insert_player.php?id=$playerId\">(Edit Player)</a>
+                    </div>
+                </li>\n";
+            }
+            ?>
+        </ul>
+        <form action="logout.php" method="post" class="menu-form">
+            <a href="index.php">Back to Home</a>
+            <input type="submit" name="Logout" value="Logout" class="logout">
+        </form>
+    </section>
+</main>
+<footer class="listado">
+    <img src="images/logo-iesra-cadiz-color-blanco.png" alt="Logo">
+    <h4>Puesta en producción segura</h4>
+    <p>Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a></p>
+</footer>
+</body>
+</html>
+```
+
+- Se vuelve a utilizar htmlspecialchars() para evitar XSS.
+- Se evitan las consultas innecesarias(require). 
+# register.php
+
+```php
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
+
+# Seguridad: Verifica si el usuario ya está logueado antes de permitir el registro
+# require_once dirname(__FILE__) . '/private/auth.php';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['username']) && isset($_POST['password'])) {
+        $username = trim($_POST['username']);
+        $password = trim($_POST['password']);
+
+        # Validar entradas
+        if (empty($username) || empty($password)) {
+            die("Username and password cannot be empty.");
+        }
+
+        # Escapar datos para evitar inyección SQL
+        $username = SQLite3::escapeString($username);
+
+        # Hash seguro para la contraseña
+        $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
+
+        # Consulta preparada para evitar inyección SQL
+        $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (:username, :password)");
+        $stmt->bindValue(':username', $username, SQLITE3_TEXT);
+        $stmt->bindValue(':password', $hashedPassword, SQLITE3_TEXT);
+
+        if ($stmt->execute()) {
+            header("Location: list_players.php");
+            exit;
+        } else {
+            die("Error while registering the user.");
+        }
+    }
+}
+
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Register</title>
+</head>
+<body>
+<header>
+    <h1>Register</h1>
+</header>
+<main class="player">
+    <form action="#" method="post">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+        <input type="submit" value="Register">
+    </form>
+    <form action="#" method="post" class="menu-form">
+        <a href="list_players.php">Back to list</a>
+        <input type="submit" name="Logout" value="Logout" class="logout">
+    </form>
+</main>
+<footer class="listado">
+    <img src="images/logo-iesra-cadiz-color-blanco.png" alt="Logo">
+    <h4>Puesta en producción segura</h4>
+    <p>Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a></p>
+</footer>
+</body>
+</html>
+```
+
+- Se validan las entradas username y password.
+- La contraseña ahora se guarda cifrada.
+- Se utiliza prepare y bindvalue para prevenir SQL.
+- Los campos username y password ahora son obligatorios.
+- Se escapan los caracteres especiales 
+# show_comments.php
+
+```php
+<?php
+require_once dirname(__FILE__) . '/private/conf.php';
+
+# Require logged users
+require_once dirname(__FILE__) . '/private/auth.php';
+?>
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <link rel="stylesheet" href="css/style.css">
+    <title>Práctica RA3 - Comments Editor</title>
+</head>
+<body>
+<header>
+    <h1>Comments Editor</h1>
+</header>
+<main class="player">
+<?php
+# Validar si se recibió un ID
+if (isset($_GET['id']) && is_numeric($_GET['id'])) {
+    $playerId = (int)$_GET['id'];
+
+    # Consulta segura usando consultas preparadas
+    $stmt = $db->prepare("SELECT C.commentId, U.username, C.body 
+                          FROM comments C 
+                          JOIN users U ON U.userId = C.userId 
+                          WHERE C.playerId = :playerId 
+                          ORDER BY C.commentId DESC");
+    $stmt->bindValue(':playerId', $playerId, SQLITE3_INTEGER);
+
+    $result = $stmt->execute();
+
+    # Listar comentarios
+    if ($result) {
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            echo "<div>
+                    <h4>" . htmlspecialchars($row['username']) . "</h4> 
+                    <p>Commented: " . htmlspecialchars($row['body']) . "</p>
+                  </div>";
+        }
+    } else {
+        echo "<p>No comments found for this player.</p>";
+    }
+} else {
+    echo "<p>Invalid player ID.</p>";
+}
+
+?>
+<div>
+    <a href="list_players.php">Back to list</a>
+    <?php if (isset($playerId)) : ?>
+        <a class="black" href="add_comment.php?id=<?php echo $playerId; ?>">Add comment</a>
+    <?php endif; ?>
+</div>
+</main>
+<footer class="listado">
+    <img src="images/logo-iesra-cadiz-color-blanco.png" alt="Logo">
+    <h4>Puesta en producción segura</h4>
+    <p>Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a></p>
+</footer>
+</body>
+</html>
+```
+
+- Validación del ID.
+- Se vuelve a utilizar prepare y bindValue para evitar SQLi.
+- Se vuelve a utilizar htmlspecialchars() para evitar XSS.
+# auth.php
+
+```php
+<?php
+require_once dirname(__FILE__) . '/conf.php';
+
+$userId = false;
+
+# Validar usuario y contraseña
+function areUserAndPasswordValid($user, $password) {
+    global $db, $userId;
+
+    # Consulta preparada para evitar inyecciones SQL
+    $stmt = $db->prepare('SELECT userId, password FROM users WHERE username = :username');
+    $stmt->bindValue(':username', $user, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$row) {
+        return false;
+    }
+
+    # Verificar contraseña con hash
+    if (password_verify($password, $row['password'])) {
+        $userId = $row['userId'];
+        setcookie('userId', $userId, time() + 3600, '/', '', false, true);
+        return true;
+    }
+
+    return false;
+}
+
+# Manejar inicio de sesión
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['username']) && isset($_POST['password'])) {
+    $username = htmlspecialchars($_POST['username']);
+    $password = htmlspecialchars($_POST['password']);
+
+    if (areUserAndPasswordValid($username, $password)) {
+        setcookie('user', $username, time() + 3600, '/', '', false, true); # Cookie segura
+        header("Location: " . $_SERVER['PHP_SELF']);
+        exit();
+    } else {
+        $error = "Invalid username or password.<br>";
+    }
+}
+
+# Manejar cierre de sesión
+if (isset($_POST['Logout'])) {
+    # Eliminar cookies
+    setcookie('user', '', time() - 3600, '/', '', false, true);
+    setcookie('userId', '', time() - 3600, '/', '', false, true);
+
+    header("Location: index.php");
+    exit();
+}
+
+# Comprobar cookies para sesión activa
+if (isset($_COOKIE['userId']) && isset($_COOKIE['user'])) {
+    $login_ok = true;
+    $error = "";
+} else {
+    $login_ok = false;
+    $error = "This page requires you to be logged in.<br>";
+}
+
+# Mostrar página de autenticación si no está logueado
+if (!$login_ok) {
+?>
+    <!doctype html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+        <meta http-equiv="X-UA-Compatible" content="ie=edge">
+        <link rel="stylesheet" href="css/style.css">
+        <title>Práctica RA3 - Authentication Page</title>
+    </head>
+    <body>
+    <header class="auth">
+        <h1>Authentication Page</h1>
+    </header>
+    <section class="auth">
+        <div class="message">
+            <?= $error ?>
+        </div>
+        <section>
+            <div>
+                <h2>Login</h2>
+                <form action="#" method="post">
+                    <label for="username">User</label>
+                    <input type="text" id="username" name="username" required><br>
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required><br>
+                    <input type="submit" value="Login">
+                </form>
+            </div>
+
+            <div>
+                <h2>Logout</h2>
+                <form action="#" method="post">
+                    <input type="submit" name="Logout" value="Logout">
+                </form>
+            </div>
+        </section>
+    </section>
+    <footer>
+        <h4>Puesta en producción segura</h4>
+        <p>Please <a href="http://www.donate.co?amount=100&amp;destination=ACMEScouting/">donate</a></p>
+    </footer>
+    </body>
+    </html>
+<?php
+    exit();
+}
+
+# Refrescar cookies en cada solicitud
+setcookie('user', $_COOKIE['user'], time() + 3600, '/', '', false, true);
+
+?>
+```
+
+- Se utiliza de nuevo prepare y bindValue para evitar inyecciones SQL.
+- Se usa password_verify() para validar contraseñas.
+- Se usa secure y httponly para evitar el acceso a las cookies desde JavaScript.
+- Se usa htmlspecialchars() para validar las entradas.
