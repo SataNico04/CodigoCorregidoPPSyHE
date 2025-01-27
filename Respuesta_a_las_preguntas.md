@@ -3,7 +3,7 @@
 
 ## a) Ejemplo de error en consulta SQL
 
-!()[Pasted image 20250114233157.png]
+!()[20250114233157.png]
 
 | Pregunta                                                       | Resultado                                               |
 | -------------------------------------------------------------- | ------------------------------------------------------- |
@@ -17,7 +17,7 @@
 
 ## b) Ataque por diccionario sin saber el usuario
 
-!()[Pasted image 20250127085304.png]
+!()[20250127085304.png]
 
 | Pregunta                                              | Respuesta                                                                                                          |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -28,7 +28,7 @@
 
 ## c) Error de programación
 
-!()[Pasted image 20250120122047.png]
+!()[20250120122047.png]
 
 | Pregunta                                 | Respuesta                                                                                                                                       |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -72,7 +72,7 @@
 | Introduzco el mensaje         | ```<script>alert("Prueba")</script>```         |
 | En el formulario de la página | http://web_vulnerable/add_comment.php?id=5 |
 
-!()[Pasted image 20250121115853.png]
+!()[20250121115853.png]
 
 
 ## b) & en URL
@@ -158,7 +158,7 @@ echo "<div>
 	Hacer distinciones entre usuarios administradores y usuarios comunes.
 
 ## d) Acceso a la carpeta private
-!()[Pasted image 20250126200150.png]
+!()[20250126200150.png]
 
 Por lo que se ve en la imagen anterior, no, no tenemos acceso a la carpeta private desde el navegador, pero si tuviéramos acceso, tendríamos que denegar el acceso a la carpeta editando los archivos de configuración del apache.
 
@@ -177,7 +177,7 @@ Como hicimos en el apartado 1.b, suplantamos la identidad del usuario *luis*. Es
 
 ## a) Añadir botón para donar
 
-!()[Pasted image 20250126201318.png]
+!()[20250126201318.png]
 
 | Pregunta    | Respuesta                                                                                                                                  |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
